@@ -1,6 +1,6 @@
 <mujoco model="digit scene">
 
-  <include file="digit-v3-armfixed-visiblecollision.xml"/> 
+  <include file="digit-v3.xml"/> 
   <include file="amazon_package.xml"/>  
 
   <statistic center="0 0 0.55" extent="1.1"/>
