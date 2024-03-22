@@ -131,7 +131,7 @@ def mujoco_test():
     gc.Set_Initial_Walking_Gains_()
 
     # test controller inside mujoco
-    m = mujoco.MjModel.from_xml_path("../assets/digit-v3-armfixed-visiblecollision.xml")
+    m = mujoco.MjModel.from_xml_path("assets/digit-v3-armfixed-visiblecollision.xml")
     d = mujoco.MjData(m)
 
     # initialize position
