@@ -157,8 +157,8 @@ def mujoco_test():
         ]
     )
     # fmt: on
-    import pdb; pdb.set_trace()
-    d.qpos[:] = init_pos
+    # import pdb; pdb.set_trace()
+    d.qpos[:init_pos.shape[0]] = init_pos
     d.qvel[:] = 0
     mujoco.mj_forward(m, d)
 
