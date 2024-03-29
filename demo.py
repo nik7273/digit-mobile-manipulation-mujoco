@@ -202,6 +202,13 @@ def mujoco_test():
         # Close the viewer automatically after 30 wall-seconds.
         start = time.time()
         while viewer.is_running() and time.time() - start < 60:
+            if time.time() - start < 5:
+                gc.Set_Ctrl_Mode_(0)
+            else:
+                gc.vel_x_des_tuned = 0.5
+                # gc.vel_x_des_filtered = 0.5
+                gc.Set_Ctrl_Mode_(2)
+
             step_start = time.time()
 
             # mj_step can be replaced with code that also evaluates
@@ -296,7 +303,7 @@ def step_controller(
         else:
             observation.joint.position[j] = d.qpos[m.jnt_qposadr[joint_id]]
             observation.joint.velocity[j] = d.qvel[m.jnt_dofadr[joint_id]]
-
+    
     gc.Update_(command, observation, LIMITS)
 
     for j in range(12):
