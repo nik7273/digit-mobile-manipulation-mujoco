@@ -139,7 +139,8 @@ def mujoco_test():
     # fmt: off
     init_pos = np.array(
         [
-            0.003237, -0.097065, 1.033634, 0.999986, -0.001082,-0.005159, -0.000101,  # base x y z, base quat
+            # 0.003237, -0.097065, 1.033634, 0.999986, -0.001082,-0.005159, -0.000101,  # base x y z, base quat
+            -1.003237, -0.097065, 1.033634, 0.999986, -0.001082,-0.005159, -0.000101,  # base x y z, base quat
             0.361490, 0.000770, 0.286025,  # left-hip-roll, left-hip-yaw, left-hip-pitch,
             0.983743, -0.000811, 0.003661, 0.179545,  # left-achilles-rod-quat
             0.373352, 0, -0.346032, -0.009752,  # left-knee, left-shin, left-tarsus, left-heel-spring,
@@ -198,16 +199,55 @@ def mujoco_test():
     command = dc.Command()
     observation = dc.Observation()
 
+    # for forward walking to goal location experiment
+    walk_vel = init_walk_vel = 0.8
+    dist_to_goal = goal = 1.0
+    VEL_TUNE_CONST = 0.3
+    MIN_VEL = 0.05
+    walk_mode = False
+    low_vel_count = 0
+    around_goal = False
+    goal_start = None
+    
     with mujoco.viewer.launch_passive(m, d) as viewer:
         # Close the viewer automatically after 30 wall-seconds.
         start = time.time()
-        while viewer.is_running() and time.time() - start < 60:
-            if time.time() - start < 5:
+        while viewer.is_running() and time.time() - start < 1000:
+            # adapt velocity based on distance to goal
+            dist_to_goal = goal - d.qpos[0]
+            print(f"Base x position: {d.qpos[0]}")
+            print(f"Dist to goal: {dist_to_goal}")
+            print(f"Walk vel: {walk_vel}")
+            vel_sign = 1 if (dist_to_goal > 0) else -1            
+            if abs(dist_to_goal) < 0.05 and walk_vel < 1e-4:
+                gc.vel_x_des_tuned_ = 0.0
+                around_goal = True
+                if not goal_start:
+                    goal_start = time.time()
+                if walk_mode:
+                    print("switching to stop")
+                    walk_mode = False
+                    gc.Set_Ctrl_Mode_(0)
+            if abs(dist_to_goal) < 0.6:
+                print("switching to lower velocity")
+                walk_vel = max(MIN_VEL, VEL_TUNE_CONST * np.sqrt(abs(dist_to_goal)))
+
+            # init, stand, or walk modes
+            if time.time() - start < 3:
+                print("initializing")
+                walk_mode = False
                 gc.Set_Ctrl_Mode_(0)
+            elif around_goal and time.time() - goal_start > 10:
+                walk_mode = False
+                gc.Set_Ctrl_Mode_(1)
             else:
-                gc.vel_x_des_tuned = 0.5
-                # gc.vel_x_des_filtered = 0.5
-                gc.Set_Ctrl_Mode_(2)
+                print("walking")
+                gc.vel_x_des_tuned_ = walk_vel * vel_sign # forward vel
+                gc.vel_y_des_tuned_ = 0.0 # lateral vel
+                gc.turn_rps_tuned_ = 0.0 # angular vel
+                if not walk_mode:
+                    walk_mode = True
+                    gc.Set_Ctrl_Mode_(2)
 
             step_start = time.time()
 
@@ -215,7 +255,7 @@ def mujoco_test():
             # a policy and applies a control signal before stepping the physics.
             # mujoco.mj_step(m, d)
             step_controller(gc, m, d, command, observation)
-
+            
             # Example modification of a viewer option: toggle contact points every two seconds.
             with viewer.lock():
                 viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = int(d.time % 2)
@@ -228,6 +268,16 @@ def mujoco_test():
             if time_until_next_step > 0:
                 time.sleep(time_until_next_step)
 
+
+def walk_to_location(gc: dc.Digit_Controller, time: float, goal: float, controller_args: tuple):
+    # start with just forward and then can generalize if it works
+    time_to_goal = goal / gc.vel_x_des_tuned_
+
+    start = time.time()
+
+    while time.time() - start < time_to_goal:
+        step_controller(gc, *controller_args)
+    
 
 def step_controller(
     gc: dc.Digit_Controller,
