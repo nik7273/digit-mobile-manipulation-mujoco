@@ -35,5 +35,8 @@ for the original slower pace (default: `2`).
 ## Test
 
 ```sh
-python -m pytest
+python -m pytest -m "not integration"  # Quick checks
+python -m pytest                       # Include full simulation runs
+ruff check .
+ruff format --check .
 ```

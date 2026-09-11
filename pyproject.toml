@@ -1,0 +1,13 @@
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "--strict-markers"
+markers = ["integration: complete physics rollouts (hold, pickup, carry, transfer)"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = ["build"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]

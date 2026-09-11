@@ -5,4 +5,7 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 MUJOCO_LOG.TXT
-/shelf/make.log
+*.so
+*.dylib
+*.pyd
+.ruff_cache/
