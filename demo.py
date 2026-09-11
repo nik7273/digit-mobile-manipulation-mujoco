@@ -28,8 +28,8 @@ def load_controller():
 
 
 class Simulation:
-    def __init__(self, scene=DEFAULT_SCENE, mode='walking', controller=True, goal_x=None):
-        self.model = m = mujoco.MjModel.from_xml_path(str(Path(scene).resolve()))
+    def __init__(self, scene=DEFAULT_SCENE, mode='walking', controller=True, goal_x=None, model=None):
+        self.model = m = model if model is not None else mujoco.MjModel.from_xml_path(str(Path(scene).resolve()))
         self.data = d = mujoco.MjData(m)
         self.mode = mode
         if goal_x is not None and (not math.isfinite(goal_x) or not controller):
@@ -107,8 +107,9 @@ class Simulation:
         self.controller.set_mode(mode)
         self.controller.set_velocity(velocity, 0.0, 0.0)
 
-    def step(self):
-        m, d = self.model, self.data
+    def motor_torques(self):
+        """Joint torques in controller order; subclasses can replace arm control."""
+        d = self.data
         if self.controller is not None:
             if self.goal_x is not None:
                 self.update_goal()
@@ -117,8 +118,16 @@ class Simulation:
             if not np.isfinite(commands).all():
                 raise RuntimeError(f'Nonfinite controller command at t={d.time:.6f}')
             torque = commands[:, 0] + commands[:, 2] * (commands[:, 1] - motors[1])
-            # Retain MuJoCo ctrlrange limits and explicitly bound total joint torque.
-            d.ctrl[self.actuator_ids] = np.clip(torque, -LIMITS[0], LIMITS[0]) / self.gear
+            return torque
+        return np.zeros(20)
+
+    def step(self):
+        m, d = self.model, self.data
+        torque = self.motor_torques()
+        if not np.isfinite(torque).all():
+            raise RuntimeError(f'Nonfinite motor torque at t={d.time:.6f}')
+        # Retain MuJoCo ctrlrange limits and explicitly bound total joint torque.
+        d.ctrl[self.actuator_ids] = np.clip(torque, -LIMITS[0], LIMITS[0]) / self.gear
         previous_time = d.time
         mujoco.mj_step(m, d)
         if d.time <= previous_time or not np.isfinite(d.qpos).all() or not np.isfinite(d.qvel).all():
