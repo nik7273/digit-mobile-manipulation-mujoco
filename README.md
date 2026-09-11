@@ -1,13 +1,11 @@
 # Digit mobile manipulation in MuJoCo
 
-Digit v3 simulation with an ALIP walking/standing controller, movable packages,
-and a table. Uses MuJoCo 3.13.0 and native C++/pybind11 bindings. A contact-based
-standing hold, pickup, payload walking, and pile-to-table transfer are included.
+Digit v3 walking and box manipulation with MuJoCo 3.13.0 and an ALIP controller.
 
 ## Setup
 
-Requires Python 3.12, a C++17 compiler, and a checkout of `digit-alip-controller`.
-On macOS, install Xcode Command Line Tools for the compiler.
+Requires Python 3.12, a C++17 compiler (Xcode Command Line Tools on macOS), and a
+checkout of `digit-alip-controller`.
 
 ```sh
 python3 -m venv .venv
@@ -16,83 +14,23 @@ python -m pip install -r requirements-dev.txt
 python scripts/build_controller.py --source /path/to/digit-alip-controller
 ```
 
-Rebuild after changing Python or controller sources. For exact dependency
-versions, install `requirements-lock.txt` instead of `requirements-dev.txt`.
+Rebuild after changing Python or controller sources.
 
 ## Run
 
-```sh
-mjpython demo.py                              # macOS viewer
-python demo.py                               # Linux viewer
-python demo.py --headless --duration 10       # no window
-python demo.py --headless --mode standing-analytic --duration 2
-```
-
-Use `--goal-x 1.0` for the experimental walk-to-goal and standing transition.
-Walking is the default mode. Use `--help` for all options; `--duration` is in
-simulation seconds.
-
-## Standing hold
+Use `mjpython` on macOS or `python` on Linux. Add `--headless` to run without a
+window; use `--help` for options. Durations are in simulation seconds.
 
 ```sh
-mjpython standing_hold.py                       # macOS viewer
-python standing_hold.py --headless --duration 30
+mjpython demo.py                  # Walk through the original scene
+mjpython standing_hold.py         # Hold a box while standing
+mjpython pickup.py                # Pick up a box from a platform
+mjpython carry.py                 # Pick up a box and walk backward
+mjpython transfer.py --overview   # Carry the top box from the pile to the table
 ```
 
-Starts with a free 1 kg box between rounded palm pads. Cartesian arm impedance
-and inward squeeze support it while ALIP controls standing. There is no box
-attachment or external support. The report checks slip, tilt, bilateral contact,
-and the weight supported by the palms after 2 seconds of settling.
-Use `--squeeze` to tune inward force per hand (default 20 N).
-
-## Platform pickup
-
-```sh
-mjpython pickup.py
-python pickup.py --headless --duration 20
-```
-
-Starts with the 1 kg box on a fixed platform and arms at rest. The hands approach,
-close, confirm sustained contact, then lift and hold. The report verifies that
-the box clears the platform and is supported only by the palms. This experiment
-uses a known box pose; it does not yet include perception or walking.
-
-## Walk with a payload
-
-```sh
-mjpython carry.py
-python carry.py --headless --duration 30
-```
-
-Picks up the original textured Amazon box, settles the grasp, then walks backward
-away from the table. The camera follows Digit. The box retains its original
-.30 × .40 × .20 m dimensions with an explicit 1 kg mass. The original table mesh
-is fixed and scaled vertically to a .9 m tabletop for reachability, with separate
-top/leg collisions. The original demo assets are unchanged.
-
-Use `--assets simple` for the pickup primitives or `--speed .2` to set the backward
-velocity target (maximum .3 m/s). The report checks payload travel, footfalls,
-grip slip, and palm-only support. This is a known-pose, straight-line retreat;
-it does not yet include turning, navigation, or set-down.
-
-## Original pile to table
-
-```sh
-mjpython transfer.py --overview
-python transfer.py --headless --duration 100
-```
-
-Uses the original five-box pile and table locations, original textures and mesh
-sizes, and 1 kg free boxes. The table is grounded and fixed, with separate top
-and leg collisions. The scripted route approaches the pile, lifts its top box,
-sidesteps clear, and travels to the table for a contact-checked set-down.
-Omit `--overview` for a camera that follows Digit. The default `--speed-scale 2`
-roughly doubles carrying commands (.36 m/s forward, .24 m/s sideways), cutting
-transport from 54 to 30 seconds and the full sequence from 86 to about 64 seconds.
-Use `--speed-scale 1` for the original pace; values between 1 and 2 are accepted.
-This uses known poses and scripted waypoints. Tilt is reported without a carry
-angle limit; success still requires palm-only transport and stable table support
-after release. Faster commands above 2 failed balance or grasp tests.
+For `transfer.py`, omit `--overview` to follow the robot, or add `--speed-scale 1`
+for the original slower pace (default: `2`).
 
 ## Test
 
