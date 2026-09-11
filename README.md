@@ -1,4 +1,4 @@
-# Digit mobile manipulation in MuJoCo
+# Digit mobile box manipulation in MuJoCo
 
 Digit v3 walking and box manipulation using an ALIP controller. Runs on MuJoCo 3.13.0.
 
