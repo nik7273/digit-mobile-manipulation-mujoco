@@ -1,374 +1,179 @@
+"""Digit ALIP control in MuJoCo 3. Run --help for viewer/headless options."""
+from __future__ import annotations
+
+import argparse
+import importlib
+import math
+from pathlib import Path
+import sys
 import time
+
 import mujoco
-import mujoco.viewer
 import numpy as np
 
-import digit_controller_pybind as dc
+from robot_config import INITIAL_QPOS, JOINT_NAMES, LIMITS
 
-NUM_MOTORS = 20
-
-# fmt: off
-AGILITY_NAMES = ["left-hip-roll", "left-hip-yaw", "left-hip-pitch",
-        "left-knee", "left-toe-A", "left-toe-B", 
-        "right-hip-roll", "right-hip-yaw", "right-hip-pitch",
-        "right-knee", "right-toe-A", "right-toe-B",
-        "left-shoulder-roll", "left-shoulder-pitch", "left-shoulder-yaw", "left-elbow",
-        "right-shoulder-roll", "right-shoulder-pitch", "right-shoulder-yaw", "right-elbow",
-        "left-shin", "left-tarsus", "left-toe-pitch", "left-toe-roll", "left-heel-spring",
-        "right-shin", "right-tarsus", "right-toe-pitch", "right-toe-roll", "right-heel-spring"]
-# fmt: on
-
-# names for version from rl repo
-# AGILITY_NAMES = [
-#     "left-leg.hip-roll",
-#     "left-leg.hip-yaw",
-#     "left-leg.hip-pitch",
-#     "left-leg.knee",
-#     "left-leg.toe-a",
-#     "left-leg.toe-b",
-#     "right-leg.hip-roll",
-#     "right-leg.hip-yaw",
-#     "right-leg.hip-pitch",
-#     "right-leg.knee",
-#     "right-leg.toe-a",
-#     "right-leg.toe-b",
-#     "left-leg.shoulder-roll",
-#     "left-leg.shoulder-pitch",
-#     "left-leg.shoulder-yaw",
-#     "left-leg.elbow",
-#     "right-leg.shoulder-roll",
-#     "right-leg.shoulder-pitch",
-#     "right-leg.shoulder-yaw",
-#     "right-leg.elbow",
-#     "left-leg.shin",
-#     "left-leg.tarsus",
-#     "left-leg.toe-pitch",
-#     "left-leg.toe-roll",
-#     "left-leg.heel-spring",
-#     "right-leg.shin",
-#     "right-leg.tarsus",
-#     "right-leg.toe-pitch",
-#     "right-leg.toe-roll",
-#     "right-leg.heel-spring",
-# ]
-
-LIMITS = dc.Limits()
-LIMITS.torque_limit = [
-    126.682458,
-    79.176536,
-    216.927898,
-    231.316950,
-    41.975942,
-    41.975942,
-    126.682458,
-    79.176536,
-    216.927898,
-    231.316950,
-    41.975942,
-    41.975942,
-    126.682458,
-    126.682458,
-    79.176536,
-    126.682458,
-    126.682458,
-    126.682458,
-    79.176536,
-    126.682458,
-]
-LIMITS.damping_limit = [
-    66.849046,
-    26.112909,
-    38.050020,
-    38.050020,
-    28.553161,
-    28.553161,
-    66.849046,
-    26.112909,
-    38.050020,
-    38.050020,
-    28.553161,
-    28.553161,
-    66.849046,
-    66.849046,
-    26.112909,
-    66.849046,
-    66.849046,
-    66.849046,
-    26.112909,
-    66.849046,
-]
-LIMITS.velocity_limit = [
-    4.581489,
-    7.330383,
-    8.508480,
-    8.508480,
-    11.519173,
-    11.519173,
-    4.581489,
-    7.330383,
-    8.508480,
-    8.508480,
-    11.519173,
-    11.519173,
-    4.581489,
-    4.581489,
-    7.330383,
-    4.581489,
-    4.581489,
-    4.581489,
-    7.330383,
-    4.581489,
-]
+ROOT = Path(__file__).resolve().parent
+DEFAULT_SCENE = ROOT / 'assets' / 'package_scene.xml'
+MODES = {'standing-analytic': 0, 'standing-numeric': 1, 'walking': 2}
 
 
-def mujoco_test():
-    # initialize the controller
-    gc = dc.Digit_Controller()
-    init_ctrl_mode = 2  # 0: standing_analytic, 1: standing_numeric, 2: walking
-    flag_torque_only = 1  # 0: use AR method, 1: feedforward torque only
-    gc.Initialize_(init_ctrl_mode, flag_torque_only)
-    gc.Set_Initial_Standing_Gains_()
-    gc.Set_Initial_Walking_Gains_()
+def load_controller():
+    # Use a distinct module name: never accidentally load the historical Linux .so.
+    sys.path.insert(0, str(ROOT / 'build' / 'python'))
+    try:
+        return importlib.import_module('_digit_alip').Controller
+    except ImportError as exc:
+        raise RuntimeError('Build the native controller with: python scripts/build_controller.py') from exc
 
-    # test controller inside mujoco
-    # m = mujoco.MjModel.from_xml_path("assets/digit-v3-armfixed-visiblecollision.xml")
-    m = mujoco.MjModel.from_xml_path("assets/package_scene.xml")
-    d = mujoco.MjData(m)
 
-    # initialize position
-    # fmt: off
-    init_pos = np.array(
-        [
-            # 0.003237, -0.097065, 1.033634, 0.999986, -0.001082,-0.005159, -0.000101,  # base x y z, base quat
-            -1.003237, -0.097065, 1.033634, 0.999986, -0.001082,-0.005159, -0.000101,  # base x y z, base quat
-            0.361490, 0.000770, 0.286025,  # left-hip-roll, left-hip-yaw, left-hip-pitch,
-            0.983743, -0.000811, 0.003661, 0.179545,  # left-achilles-rod-quat
-            0.373352, 0, -0.346032, -0.009752,  # left-knee, left-shin, left-tarsus, left-heel-spring,
-            -0.092650, 0.979409, 0.196089, 0.008040, 0.047357,  # left-toe-A, left-toe-A-rod quat
-            0.084274, 0.976142, 0.212618, -0.007367, -0.043426,  # left-toe-B, left-toe-B-rod quat
-            0.091354, -0.013601,  # left-toe-pitch, left-toe-roll
-            -0.1506, 1.0922, 0.0017, -0.1391,  # left-shoulder-roll, left-shoulder-pitch, left-shoulder-yaw, left-elbow
-            -0.360407, -0.000561, -0.286076,  # right-hip-roll, right-hip-yaw, right-hip-pitch,
-            0.983702, 0.000907, 0.003658, -0.179766,  # right-achilles-rod-quat
-            -0.372723, 0, 0.347843, 0.008955,  # right-knee, right-shin, right-tarsus, right-heel-spring,
-            0.095860, 0.979324, -0.196096, 0.008399, -0.048996,  # right-toe-A, right-toe-A-rod quat
-            -0.083562, 0.976162, -0.212611, -0.007402, 0.043016,  # right-toe-B, right-toe-B-rod quat
-            -0.092658, 0.019828,  # right-toe-pitch, right-toe-roll
-            0.1506, -1.0922, -0.0017, 0.1391,  # right-shoulder-roll, right-shoulder-pitch, right-shoulder-yaw, right-elbow
-        ]
-    )
-    # fmt: on
-    # import pdb; pdb.set_trace()
-    d.qpos[:init_pos.shape[0]] = init_pos
-    d.qvel[:] = 0
-    mujoco.mj_forward(m, d)
+class Simulation:
+    def __init__(self, scene=DEFAULT_SCENE, mode='walking', controller=True, goal_x=None):
+        self.model = m = mujoco.MjModel.from_xml_path(str(Path(scene).resolve()))
+        self.data = d = mujoco.MjData(m)
+        self.mode = mode
+        if goal_x is not None and (not math.isfinite(goal_x) or not controller):
+            raise ValueError('A finite goal requires the ALIP controller')
+        self.goal_x = goal_x
+        self.controller_type = load_controller() if controller else None
+        # Cache indices: XML actuator order is different from the controller order.
+        def ids(kind, names):
+            result = np.array([mujoco.mj_name2id(m, kind, name) for name in names])
+            if np.any(result < 0):
+                raise ValueError(f'Model is missing required names: {[n for n, i in zip(names, result) if i < 0]}')
+            return result
+        self.joint_ids = ids(mujoco.mjtObj.mjOBJ_JOINT, JOINT_NAMES)
+        self.actuator_ids = ids(mujoco.mjtObj.mjOBJ_ACTUATOR, JOINT_NAMES[:20])
+        self.qadr = m.jnt_qposadr[self.joint_ids]
+        self.vadr = m.jnt_dofadr[self.joint_ids]
+        self.gear = m.actuator_gear[self.actuator_ids, 0].copy()
+        if np.any(self.gear == 0):
+            raise ValueError('Motor transmission gear must be nonzero')
+        self.base_id = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, 'base')
+        # The original pose contains rod ball joints as well as motor coordinates.
+        if self.base_id < 0 or m.nq < len(INITIAL_QPOS):
+            raise ValueError('Scene must contain the Digit v3 robot')
+        self.reset()
 
-    # Adjust base height to make sure foot contacts with ground
-    left_toe_roll_id = mujoco.mj_name2id(
-        m, mujoco.mjtObj.mjOBJ_BODY, "left-toe-roll"
-    )  # left-leg.toe-roll")
-    world_id = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "world")
-    dist_max = 0
+    def reset(self):
+        m, d = self.model, self.data
+        mujoco.mj_resetData(m, d)
+        d.qpos[:len(INITIAL_QPOS)] = INITIAL_QPOS
+        mujoco.mj_normalizeQuat(m, d.qpos)
+        mujoco.mj_forward(m, d)
+        # Only correct robot/ground penetration; packages must not move the base.
+        feet = {m.body(name).id for name in ('left-toe-roll', 'right-toe-roll')}
+        correction = 0.0
+        for contact in d.contact:
+            b1, b2 = m.geom_bodyid[[contact.geom1, contact.geom2]]
+            if (b1 == 0 and b2 in feet) or (b2 == 0 and b1 in feet):
+                correction = max(correction, -contact.dist * abs(contact.frame[2]))
+        d.qpos[2] += correction
+        mujoco.mj_forward(m, d)
+        self.goal_reached_at = None
+        self.controller = (self.controller_type(MODES[self.mode], LIMITS, m.opt.timestep)
+                           if self.controller_type else None)
 
-    for con in d.contact:
-        if (
-            m.geom_bodyid[con.geom1] == world_id
-            and m.geom_bodyid[con.geom2] == left_toe_roll_id
-        ):
-            if abs(con.dist * con.frame[2]) > abs(dist_max):
-                dist_max = con.dist * con.frame[2]
+    def observation(self):
+        m, d = self.model, self.data
+        quat = d.qpos[3:7]
+        w, x, y, z = quat
+        yaw = np.arctan2(2*(w*z+x*y), 1-2*(y*y+z*z))
+        c, s = np.cos(yaw), np.sin(yaw)
+        # ALIP Extract_Observation_ rotates velocity back using yaw only.
+        yaw_rotation = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
+        base = np.concatenate((d.qpos[:7], yaw_rotation.T @ d.qvel[:3], d.qvel[3:6]))
+        motors = np.stack((d.qpos[self.qadr[:20]], d.qvel[self.vadr[:20]],
+                           d.actuator_force[self.actuator_ids] * self.gear))
+        joints = np.stack((d.qpos[self.qadr[20:]], d.qvel[self.vadr[20:]]))
+        return base, motors, joints
 
-    right_toe_roll_id = mujoco.mj_name2id(
-        m, mujoco.mjtObj.mjOBJ_BODY, "right-toe-roll"
-    )  # "right-leg.toe-roll")
-    world_id = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "world")
-    for con in d.contact:
-        if (
-            m.geom_bodyid[con.geom1] == world_id
-            and m.geom_bodyid[con.geom2] == right_toe_roll_id
-        ):
-            if abs(con.dist * con.frame[2]) > abs(dist_max):
-                dist_max = con.dist * con.frame[2]
-
-    d.qpos[2] -= dist_max
-
-    # Turn off control limits
-    for i in range(m.nu):
-        m.actuator_ctrllimited[i] = False
-
-    command = dc.Command()
-    observation = dc.Observation()
-
-    # for forward walking to goal location experiment
-    walk_vel = init_walk_vel = 0.8
-    dist_to_goal = goal = 1.0
-    VEL_TUNE_CONST = 0.3
-    MIN_VEL = 0.05
-    walk_mode = False
-    low_vel_count = 0
-    around_goal = False
-    goal_start = None
-    
-    with mujoco.viewer.launch_passive(m, d) as viewer:
-        # Close the viewer automatically after 30 wall-seconds.
-        start = time.time()
-        while viewer.is_running() and time.time() - start < 1000:
-            # adapt velocity based on distance to goal
-            dist_to_goal = goal - d.qpos[0]
-            print(f"Base x position: {d.qpos[0]}")
-            print(f"Dist to goal: {dist_to_goal}")
-            print(f"Walk vel: {walk_vel}")
-            vel_sign = 1 if (dist_to_goal > 0) else -1            
-            if abs(dist_to_goal) < 0.05 and walk_vel < 1e-4:
-                gc.vel_x_des_tuned_ = 0.0
-                around_goal = True
-                if not goal_start:
-                    goal_start = time.time()
-                if walk_mode:
-                    print("switching to stop")
-                    walk_mode = False
-                    gc.Set_Ctrl_Mode_(0)
-            if abs(dist_to_goal) < 0.6:
-                print("switching to lower velocity")
-                walk_vel = max(MIN_VEL, VEL_TUNE_CONST * np.sqrt(abs(dist_to_goal)))
-
-            # init, stand, or walk modes
-            if time.time() - start < 3:
-                print("initializing")
-                walk_mode = False
-                gc.Set_Ctrl_Mode_(0)
-            elif around_goal and time.time() - goal_start > 10:
-                walk_mode = False
-                gc.Set_Ctrl_Mode_(1)
+    def update_goal(self):
+        """Upstream forward-walking experiment, driven by simulation time."""
+        t = self.data.time
+        distance = self.goal_x - self.data.qpos[0]
+        if t < 3:
+            mode, velocity = 0, 0.0
+        else:
+            if self.goal_reached_at is None and abs(distance) < .05:
+                self.goal_reached_at = t
+            if self.goal_reached_at is not None:
+                mode = 0 if t - self.goal_reached_at < 10 else 1
+                velocity = 0.0
             else:
-                print("walking")
-                gc.vel_x_des_tuned_ = walk_vel * vel_sign # forward vel
-                gc.vel_y_des_tuned_ = 0.0 # lateral vel
-                gc.turn_rps_tuned_ = 0.0 # angular vel
-                if not walk_mode:
-                    walk_mode = True
-                    gc.Set_Ctrl_Mode_(2)
+                mode = 2
+                speed = max(.05, .3 * math.sqrt(abs(distance))) if abs(distance) < .6 else .8
+                velocity = math.copysign(speed, distance)
+        self.controller.set_mode(mode)
+        self.controller.set_velocity(velocity, 0.0, 0.0)
 
-            step_start = time.time()
+    def step(self):
+        m, d = self.model, self.data
+        if self.controller is not None:
+            if self.goal_x is not None:
+                self.update_goal()
+            base, motors, joints = self.observation()
+            commands = self.controller.update(d.time, base, motors, joints)
+            if not np.isfinite(commands).all():
+                raise RuntimeError(f'Nonfinite controller command at t={d.time:.6f}')
+            torque = commands[:, 0] + commands[:, 2] * (commands[:, 1] - motors[1])
+            # Retain MuJoCo ctrlrange limits and explicitly bound total joint torque.
+            d.ctrl[self.actuator_ids] = np.clip(torque, -LIMITS[0], LIMITS[0]) / self.gear
+        previous_time = d.time
+        mujoco.mj_step(m, d)
+        if d.time <= previous_time or not np.isfinite(d.qpos).all() or not np.isfinite(d.qvel).all():
+            raise RuntimeError('MuJoCo state became invalid or reset after instability')
+        if np.any(d.warning.number):
+            raise RuntimeError(f'MuJoCo reported simulation warnings: {d.warning.number}')
 
-            # mj_step can be replaced with code that also evaluates
-            # a policy and applies a control signal before stepping the physics.
-            # mujoco.mj_step(m, d)
-            step_controller(gc, m, d, command, observation)
-            
-            # Example modification of a viewer option: toggle contact points every two seconds.
+
+def positive(value):
+    number = float(value)
+    if not math.isfinite(number) or number <= 0:
+        raise argparse.ArgumentTypeError('must be finite and positive')
+    return number
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--scene', type=Path, default=DEFAULT_SCENE)
+    parser.add_argument('--mode', choices=MODES, default='walking')
+    parser.add_argument('--duration', type=positive, default=60, help='simulation seconds')
+    parser.add_argument('--headless', action='store_true', help='run without a window or wall-clock pacing')
+    parser.add_argument('--passive', action='store_true', help='physics only, without ALIP (robot will fall)')
+    parser.add_argument('--fps', type=positive, default=60, help='viewer refresh rate')
+    parser.add_argument('--contacts', action='store_true', help='show contact points')
+    parser.add_argument('--goal-x', type=float, help='experimental world-x goal; starts with 3s standing')
+    args = parser.parse_args()
+    if args.goal_x is not None and (not math.isfinite(args.goal_x) or args.passive):
+        parser.error('--goal-x must be finite and cannot be used with --passive')
+    sim = Simulation(args.scene, args.mode, controller=not args.passive, goal_x=args.goal_x)
+    start = time.perf_counter()
+    steps = math.ceil(args.duration / sim.model.opt.timestep)
+    if args.headless:
+        for _ in range(steps):
+            sim.step()
+    else:
+        from mujoco import viewer as mj_viewer
+        # macOS requires the mjpython launcher for the passive viewer.
+        with mj_viewer.launch_passive(sim.model, sim.data) as viewer:
             with viewer.lock():
-                viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = int(d.time % 2)
-
-            # Pick up changes to the physics state, apply perturbations, update options from GUI.
-            viewer.sync()
-
-            # Rudimentary time keeping, will drift relative to wall clock.
-            time_until_next_step = m.opt.timestep - (time.time() - step_start)
-            if time_until_next_step > 0:
-                time.sleep(time_until_next_step)
-
-
-def walk_to_location(gc: dc.Digit_Controller, time: float, goal: float, controller_args: tuple):
-    # start with just forward and then can generalize if it works
-    time_to_goal = goal / gc.vel_x_des_tuned_
-
-    start = time.time()
-
-    while time.time() - start < time_to_goal:
-        step_controller(gc, *controller_args)
-    
-
-def step_controller(
-    gc: dc.Digit_Controller,
-    m: mujoco.MjModel,
-    d: mujoco.MjData,
-    command: dc.Command,
-    observation: dc.Observation,
-):
-    observation.time = d.time
-    observation.error = 0
-
-    for j in range(3):
-        observation.base.translation[j] = d.qpos[j]
-
-    observation.base.orientation.w = d.qpos[3]
-    observation.base.orientation.x = d.qpos[4]
-    observation.base.orientation.y = d.qpos[5]
-    observation.base.orientation.z = d.qpos[6]
-
-    rotMat = np.zeros((9, 1), dtype=np.float64, order="C")
-    mujoco.mju_quat2Mat(rotMat, d.qpos[3:7])
-    linVel = np.empty((3,), dtype=np.float64, order="C")
-    linVel.flags.writeable = True
-    mujoco.mju_mulMatTVec(linVel, rotMat.reshape((3, 3)), d.qvel[:3])
-
-    for j in range(3):
-        observation.base.linear_velocity[j] = linVel[j]
-
-    for j in range(3):
-        observation.base.angular_velocity[j] = d.qvel[j + 3]
-
-    observation.imu.orientation.w = 0
-    observation.imu.orientation.x = 0
-    observation.imu.orientation.y = 0
-    observation.imu.orientation.z = 0
-
-    for j in range(3):
-        observation.imu.angular_velocity[j] = 0
-
-    for j in range(3):
-        observation.imu.linear_acceleration[j] = 0
-
-    for j in range(3):
-        observation.imu.magnetic_field[j] = 0
-
-    for j in range(12):
-        observation.motor.position[j] = 0
-        observation.motor.velocity[j] = 0
-        observation.motor.torque[j] = 0
-
-        joint_id = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, AGILITY_NAMES[j])
-        act_id = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_ACTUATOR, AGILITY_NAMES[j])
-        if joint_id == -1:
-            print("Couldn't find motor", AGILITY_NAMES[j])
-        else:
-            observation.motor.position[j] = d.qpos[m.jnt_qposadr[joint_id]]
-            observation.motor.velocity[j] = d.qvel[m.jnt_dofadr[joint_id]]
-            observation.motor.torque[j] = d.ctrl[act_id] * m.actuator_gear[act_id, 0]
-
-    for j in range(12, NUM_MOTORS):
-        observation.motor.position[j] = 0
-        observation.motor.velocity[j] = 0
-        observation.motor.torque[j] = 0
-
-    for j in range(10):
-        observation.joint.position[j] = 0
-        observation.joint.velocity[j] = 0
-        joint_id = mujoco.mj_name2id(
-            m, mujoco.mjtObj.mjOBJ_JOINT, AGILITY_NAMES[j + 20]
-        )
-        if joint_id == -1:
-            print("Couldn't find joint", AGILITY_NAMES[j + 20])
-        else:
-            observation.joint.position[j] = d.qpos[m.jnt_qposadr[joint_id]]
-            observation.joint.velocity[j] = d.qvel[m.jnt_dofadr[joint_id]]
-    
-    gc.Update_(command, observation, LIMITS)
-
-    for j in range(12):
-        act_id = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_ACTUATOR, AGILITY_NAMES[j])
-        if act_id == -1:
-            print("Could not find actuator")
-        else:
-            d.ctrl[act_id] = (
-                command.motors[j][0]  # .torque
-                + command.motors[j][2]  # .damping
-                * (command.motors[j][1] - observation.motor.velocity[j])
-            ) / m.actuator_gear[act_id, 0]
-
-    mujoco.mj_step(m, d)
+                viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = args.contacts
+            next_frame = 0.0
+            for _ in range(steps):
+                if not viewer.is_running():
+                    break
+                sim.step()
+                if sim.data.time >= next_frame:
+                    viewer.sync()
+                    next_frame = sim.data.time + 1 / args.fps
+                    remaining = sim.data.time - (time.perf_counter() - start)
+                    if remaining > 0:
+                        time.sleep(remaining)
+    elapsed = time.perf_counter() - start
+    print(f'MuJoCo {mujoco.__version__}: {sim.data.time:.3f}s simulated in {elapsed:.3f}s '
+          f'({sim.data.time / elapsed:.2f}x real time), base height={sim.data.qpos[2]:.3f}m')
 
 
-if __name__ == "__main__":
-    mujoco_test()
+if __name__ == '__main__':
+    main()

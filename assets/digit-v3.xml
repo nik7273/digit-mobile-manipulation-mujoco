@@ -1,6 +1,6 @@
 <mujoco model='digit-v3'>
   <compiler angle='degree' eulerseq='xyz' meshdir='obj' texturedir='obj'/>
-  <option iterations='50' solver='Newton' timestep='0.0005' gravity='0 0 -9.806'/>
+  <option iterations='50' solver='Newton' integrator='implicitfast' timestep='0.0005' gravity='0 0 -9.806'/>
   <size nconmax='100' />
   <asset>
     <material name='collision' rgba='0.1 0.5 0.9 0.4'/> 
