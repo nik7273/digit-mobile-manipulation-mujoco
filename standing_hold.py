@@ -15,20 +15,14 @@ SCENE = ROOT / 'assets' / 'standing_hold.xml'
 PALM_RADIUS = .035
 
 
-def hold_model(*, platform=False):
+def hold_model(*, platform=False, scene=SCENE):
     """Add approximate rounded pads only to this experiment's robot model.
 
     Four-dimensional contact includes torsional friction for a soft palm patch;
     no adhesion, weld, or rolling-friction constraint is used to hold the box.
     """
-    spec = mujoco.MjSpec.from_file(str(SCENE))
-    for side in ('left', 'right'):
-        hand = spec.body(f'{side}-hand')
-        hand.add_geom(name=f'{side}-palm', type=mujoco.mjtGeom.mjGEOM_SPHERE,
-                      size=[PALM_RADIUS, 0, 0], mass=.05, contype=8, conaffinity=4,
-                      condim=4, friction=[.7, .01, .0001], solref=[.01, 1],
-                      rgba=[.15, .35, .65, 1])
-        hand.add_site(name=f'{side}-palm', size=[.008, 0, 0], rgba=[1, 0, 0, 1])
+    spec = mujoco.MjSpec.from_file(str(scene))
+    add_palms(spec)
     if platform:
         spec.worldbody.add_geom(
             name='pickup-platform', type=mujoco.mjtGeom.mjGEOM_BOX,
@@ -41,6 +35,17 @@ def hold_model(*, platform=False):
                 size=[.025, .025, .425], contype=1, conaffinity=15,
                 rgba=[.3, .35, .4, 1])
     return spec.compile()
+
+
+def add_palms(spec):
+    """Add the contact pads shared by manipulation experiments."""
+    for side in ('left', 'right'):
+        hand = spec.body(f'{side}-hand')
+        hand.add_geom(name=f'{side}-palm', type=mujoco.mjtGeom.mjGEOM_SPHERE,
+                      size=[PALM_RADIUS, 0, 0], mass=.05, contype=8, conaffinity=4,
+                      condim=4, friction=[.7, .01, .0001], solref=[.01, 1],
+                      rgba=[.15, .35, .65, 1])
+        hand.add_site(name=f'{side}-palm', size=[.008, 0, 0], rgba=[1, 0, 0, 1])
 
 
 class StandingHold(Simulation):
@@ -93,6 +98,9 @@ class StandingHold(Simulation):
         d.qpos[self.box_adr+3:self.box_adr+7] = d.qpos[3:7]
         self.posture = d.qpos[self.qadr[12:20]].copy()
         mujoco.mj_forward(m, d)
+
+    def camera_target(self):
+        return np.array([.15, 0, .9])
 
     def release(self):
         """Open the palms without changing the box state or applying box forces."""
@@ -227,8 +235,8 @@ def run_experiment(sim, stats, args):
         from mujoco import viewer as mj_viewer
         with mj_viewer.launch_passive(sim.model, sim.data) as viewer:
             with viewer.lock():
-                viewer.cam.lookat[:] = [.15, 0, .9]
-                viewer.cam.distance = 2.5
+                viewer.cam.lookat[:] = sim.camera_target()
+                viewer.cam.distance = getattr(sim, 'camera_distance', 2.5)
                 viewer.cam.azimuth = 135
                 viewer.cam.elevation = -15
                 viewer.opt.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = args.contacts
@@ -239,6 +247,9 @@ def run_experiment(sim, stats, args):
                     break
                 step(i)
                 if sim.data.time >= next_frame:
+                    if getattr(sim, 'follow_camera', False):
+                        with viewer.lock():
+                            viewer.cam.lookat[:] = sim.camera_target()
                     viewer.sync()
                     next_frame = sim.data.time + 1/60
                     time.sleep(max(0, sim.data.time - (time.perf_counter() - start)))

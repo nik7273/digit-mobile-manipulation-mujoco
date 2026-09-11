@@ -2,8 +2,7 @@
 
 Digit v3 simulation with an ALIP walking/standing controller, movable packages,
 and a table. Uses MuJoCo 3.13.0 and native C++/pybind11 bindings. A contact-based
-standing hold and scripted platform pickup are included. Carrying while walking
-is not yet implemented.
+standing hold, pickup, payload walking, and pile-to-table transfer are included.
 
 ## Setup
 
@@ -57,6 +56,40 @@ Starts with the 1 kg box on a fixed platform and arms at rest. The hands approac
 close, confirm sustained contact, then lift and hold. The report verifies that
 the box clears the platform and is supported only by the palms. This experiment
 uses a known box pose; it does not yet include perception or walking.
+
+## Walk with a payload
+
+```sh
+mjpython carry.py
+python carry.py --headless --duration 30
+```
+
+Picks up the original textured Amazon box, settles the grasp, then walks backward
+away from the table. The camera follows Digit. The box retains its original
+.30 × .40 × .20 m dimensions with an explicit 1 kg mass. The original table mesh
+is fixed and scaled vertically to a .9 m tabletop for reachability, with separate
+top/leg collisions. The original demo assets are unchanged.
+
+Use `--assets simple` for the pickup primitives or `--speed .2` to set the backward
+velocity target (maximum .3 m/s). The report checks payload travel, footfalls,
+grip slip, and palm-only support. This is a known-pose, straight-line retreat;
+it does not yet include turning, navigation, or set-down.
+
+## Original pile to table
+
+```sh
+mjpython transfer.py --overview
+python transfer.py --headless --duration 100
+```
+
+Uses the original five-box pile and table locations, original textures and mesh
+sizes, and 1 kg free boxes. The table is grounded and fixed, with separate top
+and leg collisions. The scripted route approaches the pile, lifts its top box,
+sidesteps clear, and travels to the table for a contact-checked set-down.
+Omit `--overview` for a camera that follows Digit. Completion takes about 86
+simulation seconds. This uses known object poses and scripted waypoints; the
+report checks palm-only carrying and stable table support after release. The current carry has a brief tilt of about 29° while retaining
+both palm contacts.
 
 ## Test
 

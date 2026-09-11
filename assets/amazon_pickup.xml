@@ -1,0 +1,42 @@
+<mujoco model="Digit Amazon box carry">
+  <include file="digit-v3.xml"/>
+  <option cone="elliptic" impratio="10" noslip_iterations="3"/>
+  <statistic center="0.1 0 0.8" extent="1.5"/>
+  <visual>
+    <headlight diffuse=".8 .8 .8" ambient=".5 .5 .5" specular=".2 .2 .2"/>
+    <global azimuth="135" elevation="-15"/>
+  </visual>
+  <asset>
+    <texture name="amazonbody" type="2d" file="amazon.png"/>
+    <material name="amazonbody" texture="amazonbody" texuniform="true"/>
+    <mesh name="amazonbody" file="amazon_box.obj"/>
+    <texture name="tablebody" type="2d" file="table.png"/>
+    <material name="tablebody" texture="tablebody" texuniform="true"/>
+    <!-- Original table, scaled vertically from .725 m to .9 m for reachability. -->
+    <mesh name="tablebody" file="table.obj" scale="1 1.2413793103448276 1"/>
+  </asset>
+  <worldbody>
+    <light pos="0 -2 3" dir="0 0 -1"/>
+    <geom name="floor" type="plane" size="3 3 .1" contype="1" conaffinity="15"
+          condim="3" friction="1 .005 .0001" rgba=".22 .27 .32 1"/>
+    <body name="held-box" pos=".42 0 1">
+      <freejoint name="held-box"/>
+      <!-- Original .30 x .40 x .20 m box; explicit 1 kg payload. -->
+      <inertial pos="0 0 0" mass="1" diaginertia=".0166666667 .0108333333 .0208333333"/>
+      <geom name="amazon-visual" type="mesh" mesh="amazonbody" material="amazonbody"
+            pos="0 0 -.1" quat=".5 .5 .5 .5" mass="0" contype="0" conaffinity="0"/>
+      <geom name="held-box" type="box" size=".15 .20 .10" contype="4" conaffinity="15"
+            condim="4" friction=".7 .01 .0001" solref=".01 1" rgba="0 0 0 0"/>
+    </body>
+    <!-- Fixed table: separate top/leg collision geoms preserve the open space. -->
+    <geom name="table-visual" type="mesh" mesh="tablebody" material="tablebody"
+          pos=".52 0 .8689655172413793" quat=".5 .5 .5 .5" mass="0" contype="0" conaffinity="0"/>
+    <geom name="pickup-platform" type="box" pos=".52 0 .8844827586206897"
+          size=".25 .5 .015517241379310345" contype="1" conaffinity="15" condim="3"
+          friction=".7 .005 .0001" rgba="0 0 0 0"/>
+    <geom name="table-leg-1" type="box" pos=".37 .35 .4344827586206897" size=".05 .05 .4344827586206897" contype="1" conaffinity="15" rgba="0 0 0 0"/>
+    <geom name="table-leg-2" type="box" pos=".37 -.35 .4344827586206897" size=".05 .05 .4344827586206897" contype="1" conaffinity="15" rgba="0 0 0 0"/>
+    <geom name="table-leg-3" type="box" pos=".67 .35 .4344827586206897" size=".05 .05 .4344827586206897" contype="1" conaffinity="15" rgba="0 0 0 0"/>
+    <geom name="table-leg-4" type="box" pos=".67 -.35 .4344827586206897" size=".05 .05 .4344827586206897" contype="1" conaffinity="15" rgba="0 0 0 0"/>
+  </worldbody>
+</mujoco>

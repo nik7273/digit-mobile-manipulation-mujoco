@@ -20,8 +20,8 @@ def blend(start, end, elapsed, duration):
 
 
 class Pickup(StandingHold):
-    def __init__(self, squeeze=20):
-        super().__init__(squeeze=squeeze, model=hold_model(platform=True))
+    def __init__(self, squeeze=20, *, model=None):
+        super().__init__(squeeze=squeeze, model=hold_model(platform=True) if model is None else model)
 
     def reset(self):
         super().reset()
@@ -140,9 +140,13 @@ class Pickup(StandingHold):
                 angular_velocity = self.rot_jac @ self.data.qvel
                 # Preserve twist about the grasp normal using the fourth arm DOF.
                 # Projection keeps position control the primary task.
-                moment = np.array([0, self.orientation_gain*error[1] - 2*angular_velocity[1], 0])
+                moment = self.orientation_moment(error, angular_velocity)
                 torque[idx] += null @ self.rot_jac[:, dofs].T @ moment
         return torque
+
+    def orientation_moment(self, error, angular_velocity):
+        """Desired twist moment about the palm-to-palm grasp axis."""
+        return np.array([0, self.orientation_gain*error[1] - 2*angular_velocity[1], 0])
 
     def measure(self):
         values = super().measure()

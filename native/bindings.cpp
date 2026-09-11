@@ -38,6 +38,10 @@ public:
     }
     void set_mode(int mode) {
         if (mode < 0 || mode > 2) throw py::value_error("Mode must be 0, 1, or 2");
+        if (mode != controller.ctrl_mode_) {
+            if (mode == 2) controller.flag_walking_first_iter_ = true;
+            else controller.flag_standing_first_iter_ = true;
+        }
         controller.Set_Ctrl_Mode_(mode);
     }
     void set_velocity(double forward, double lateral, double turn) {
