@@ -2,8 +2,8 @@
 
 Digit v3 simulation with an ALIP walking/standing controller, movable packages,
 and a table. Uses MuJoCo 3.13.0 and native C++/pybind11 bindings. A contact-based
-standing hold is included; autonomous pickup and carrying while walking are not
-yet implemented.
+standing hold and scripted platform pickup are included. Carrying while walking
+is not yet implemented.
 
 ## Setup
 
@@ -45,6 +45,18 @@ and inward squeeze support it while ALIP controls standing. There is no box
 attachment or external support. The report checks slip, tilt, bilateral contact,
 and the weight supported by the palms after 2 seconds of settling.
 Use `--squeeze` to tune inward force per hand (default 20 N).
+
+## Platform pickup
+
+```sh
+mjpython pickup.py
+python pickup.py --headless --duration 20
+```
+
+Starts with the 1 kg box on a fixed platform and arms at rest. The hands approach,
+close, confirm sustained contact, then lift and hold. The report verifies that
+the box clears the platform and is supported only by the palms. This experiment
+uses a known box pose; it does not yet include perception or walking.
 
 ## Test
 

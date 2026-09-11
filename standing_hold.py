@@ -15,7 +15,7 @@ SCENE = ROOT / 'assets' / 'standing_hold.xml'
 PALM_RADIUS = .035
 
 
-def hold_model():
+def hold_model(*, platform=False):
     """Add approximate rounded pads only to this experiment's robot model.
 
     Four-dimensional contact includes torsional friction for a soft palm patch;
@@ -29,15 +29,28 @@ def hold_model():
                       condim=4, friction=[.7, .01, .0001], solref=[.01, 1],
                       rgba=[.15, .35, .65, 1])
         hand.add_site(name=f'{side}-palm', size=[.008, 0, 0], rgba=[1, 0, 0, 1])
+    if platform:
+        spec.worldbody.add_geom(
+            name='pickup-platform', type=mujoco.mjtGeom.mjGEOM_BOX,
+            pos=[.42, 0, .875], size=[.20, .27, .025],
+            contype=1, conaffinity=15, condim=3, friction=[.7, .005, .0001],
+            rgba=[.5, .55, .6, 1])
+        for y in (-.21, .21):
+            spec.worldbody.add_geom(
+                type=mujoco.mjtGeom.mjGEOM_BOX, pos=[.52, y, .425],
+                size=[.025, .025, .425], contype=1, conaffinity=15,
+                rgba=[.3, .35, .4, 1])
     return spec.compile()
 
 
 class StandingHold(Simulation):
-    def __init__(self, squeeze=20.0):
+    def __init__(self, squeeze=20.0, *, model=None):
         if not math.isfinite(squeeze) or squeeze < 0:
             raise ValueError('Squeeze force must be finite and nonnegative')
         self.squeeze = squeeze
-        super().__init__(model=hold_model(), mode='standing-analytic')
+        self.position_gain = 800
+        self.velocity_gain = 40
+        super().__init__(model=hold_model() if model is None else model, mode='standing-analytic')
 
     def reset(self):
         super().reset()
@@ -78,32 +91,40 @@ class StandingHold(Simulation):
         rotation = d.xmat[self.base_id].reshape(3,3)
         d.qpos[self.box_adr:self.box_adr+3] = d.xpos[self.base_id] + rotation @ self.center_offset
         d.qpos[self.box_adr+3:self.box_adr+7] = d.qpos[3:7]
-        self.posture = d.qpos[self.qadr[12:]].copy()
+        self.posture = d.qpos[self.qadr[12:20]].copy()
         mujoco.mj_forward(m, d)
 
     def release(self):
         """Open the palms without changing the box state or applying box forces."""
         self.released = True
 
+    def palm_command(self, side):
+        """Desired world position/velocity and feedforward force for one palm."""
+        m, d = self.model, self.data
+        rotation = d.xmat[self.base_id].reshape(3,3)
+        offset = self.offsets[side].copy()
+        if self.released:
+            offset[1] += .12 if side == 0 else -.12
+        target = d.xpos[self.base_id] + rotation @ offset
+        mujoco.mj_jac(m, d, self.base_jac, None, target, self.base_id)
+        velocity = self.base_jac @ d.qvel
+        force = np.zeros(3)
+        if not self.released:
+            force += rotation @ np.array([0, -self.squeeze if side == 0 else self.squeeze, 0])
+            force += np.array([0, 0, self.payload_weight/2])
+        return target, velocity, force
+
     def motor_torques(self):
         torque = super().motor_torques()
         m, d = self.model, self.data
-        rotation = d.xmat[self.base_id].reshape(3,3)
         for side, site in enumerate(self.sites):
             idx = slice(12+4*side, 16+4*side)
             dofs = self.vadr[idx]
-            offset = self.offsets[side].copy()
-            if self.released:
-                offset[1] += .12 if side == 0 else -.12
-            target = d.xpos[self.base_id] + rotation @ offset
+            target, velocity, feedforward = self.palm_command(side)
             mujoco.mj_jacSite(m, d, self.jac, None, site)
-            mujoco.mj_jac(m, d, self.base_jac, None, target, self.base_id)
-            # Damping uses motion relative to the moving torso target.
-            velocity_error = (self.base_jac - self.jac) @ d.qvel
-            force = 800*(target-d.site_xpos[site]) + 40*velocity_error
-            if not self.released:
-                force += rotation @ np.array([0, -self.squeeze if side == 0 else self.squeeze, 0])
-                force += np.array([0, 0, self.payload_weight/2])
+            # Damping uses motion relative to the desired trajectory.
+            velocity_error = velocity - self.jac @ d.qvel
+            force = self.position_gain*(target-d.site_xpos[site]) + self.velocity_gain*velocity_error + feedforward
             jac = self.jac[:, dofs]
             # The fourth arm DOF softly prefers the initialized posture.
             null = np.eye(4) - np.linalg.pinv(jac) @ jac
@@ -189,8 +210,11 @@ def main():
     args = parser.parse_args()
     if args.duration < 3:
         parser.error('--duration must be at least 3 seconds to measure the settled hold')
-    sim = StandingHold(squeeze=args.squeeze)
-    stats = HoldStats()
+    run_experiment(StandingHold(squeeze=args.squeeze), HoldStats(), args)
+
+
+def run_experiment(sim, stats, args):
+    """Run a manipulation experiment with common viewer pacing and reporting."""
     steps = math.ceil(args.duration / sim.model.opt.timestep)
     def step(index):
         sim.step()

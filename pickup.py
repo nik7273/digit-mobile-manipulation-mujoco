@@ -1,0 +1,225 @@
+"""Approach, grasp, and lift a free box from a fixed platform."""
+from __future__ import annotations
+
+import argparse
+
+import numpy as np
+import mujoco
+
+from robot_config import INITIAL_QPOS
+from demo import positive
+from standing_hold import StandingHold, HoldStats, hold_model, run_experiment
+
+
+def blend(start, end, elapsed, duration):
+    """Quintic position interpolation with zero endpoint velocity/acceleration."""
+    u = np.clip(elapsed/duration, 0, 1)
+    a = 10*u**3 - 15*u**4 + 6*u**5
+    da = (30*u**2 - 60*u**3 + 30*u**4)/duration
+    return start + a*(end-start), da*(end-start)
+
+
+class Pickup(StandingHold):
+    def __init__(self, squeeze=20):
+        super().__init__(squeeze=squeeze, model=hold_model(platform=True))
+
+    def reset(self):
+        super().reset()
+        m, d = self.model, self.data
+        self.platform = m.geom('pickup-platform').id
+        self.platform_top = m.geom_pos[self.platform, 2] + m.geom_size[self.platform, 2]
+        self.box_halfsize = m.geom_size[m.geom('held-box').id].copy()
+        self.pick_center = np.array([.42, 0, self.platform_top + self.box_halfsize[2]])
+        # Reset starts with the box supported by the platform and arms at rest.
+        # Subsequent motion uses motor torques only.
+        d.qpos[self.box_adr:self.box_adr+3] = self.pick_center
+        d.qpos[self.box_adr+3:self.box_adr+7] = [1,0,0,0]
+        d.qpos[self.qadr[12:20]] = INITIAL_QPOS[self.qadr[12:20]]
+        mujoco.mj_forward(m, d)
+        self.posture = d.qpos[self.qadr[12:20]].copy()
+        self.start_palms = d.site_xpos[self.sites].copy()
+        half_span = self.offsets[0][1]
+        self.open_palms = np.array([self.pick_center + [0, sign*(half_span+.06), 0]
+                                    for sign in (1, -1)])
+        self.closed_palms = np.array([self.pick_center + [0, sign*half_span, 0]
+                                      for sign in (1, -1)])
+        self.lift_delta = np.array([0.0, 0, .12])
+        self.orientation_gain = 400
+        self.grasp_rotations = None
+        self.rot_jac = np.zeros((3, m.nv))
+        self.phase = 'settle'
+        self.phase_start = 0.0
+        self.contact_since = None
+        self.contact_lost_since = None
+        self.events = [('settle', 0.0)]
+        self.targets = self.start_palms.copy()
+        self.target_velocities = np.zeros((2,3))
+        self.squeeze_scale = 0.0
+        self.support_scale = 0.0
+
+    def transition(self, phase):
+        self.phase = phase
+        self.phase_start = self.data.time
+        self.events.append((phase, self.data.time))
+        if phase == 'lift':
+            self.grasp_rotations = self.data.site_xmat[self.sites].copy().reshape(2, 3, 3)
+
+    def update_task(self):
+        t = self.data.time
+        elapsed = t - self.phase_start
+        if self.phase == 'settle' and elapsed >= 2:
+            self.transition('approach')
+        elif self.phase == 'approach' and elapsed >= 2:
+            self.transition('close')
+        elif self.phase == 'close' and elapsed >= 1.5:
+            self.transition('grasp')
+        elif self.phase == 'grasp':
+            # Require a friction margin above the static payload weight.
+            required_normal = 1.2*self.payload_weight/(2*.7)
+            contact = np.all(self.measure()['normal_force'] > required_normal)
+            if not contact:
+                self.contact_since = None
+            elif self.contact_since is None:
+                self.contact_since = t
+            elif t - self.contact_since >= .25:
+                self.transition('lift')
+            if self.phase == 'grasp' and elapsed > 3:
+                raise RuntimeError('Grasp failed: both palms must maintain contact before lifting')
+        elif self.phase == 'lift' and elapsed >= 2:
+            self.transition('hold')
+        if self.phase in ('lift', 'hold'):
+            if np.all(self.measure()['normal_force'] > 1):
+                self.contact_lost_since = None
+            elif self.contact_lost_since is None:
+                self.contact_lost_since = t
+            elif t - self.contact_lost_since > .1:
+                raise RuntimeError('Grasp lost during lift/hold')
+        elapsed = t - self.phase_start
+        self.target_velocities[:] = 0
+        if self.phase == 'settle':
+            self.targets = self.start_palms.copy()
+        elif self.phase == 'approach':
+            self.targets, self.target_velocities = blend(self.start_palms, self.open_palms, elapsed, 2)
+        elif self.phase == 'close':
+            self.targets, self.target_velocities = blend(self.open_palms, self.closed_palms, elapsed, 1.5)
+            self.squeeze_scale = float(blend(0, 1, elapsed, 1.5)[0])
+        elif self.phase == 'grasp':
+            self.targets = self.closed_palms.copy()
+            self.squeeze_scale = 1.0
+        elif self.phase == 'lift':
+            self.targets, self.target_velocities = blend(self.closed_palms, self.closed_palms+self.lift_delta, elapsed, 2)
+            self.support_scale = float(blend(0, 1, elapsed, .5)[0])
+        elif self.phase == 'hold':
+            self.targets = self.closed_palms + self.lift_delta
+            self.support_scale = 1.0
+
+    def release(self):
+        super().release()
+        self.transition('released')
+
+    def palm_command(self, side):
+        if self.released:
+            target = self.targets[side] + [0, .12 if side == 0 else -.12, 0]
+            return target, np.zeros(3), np.zeros(3)
+        force = np.array([0, (-1 if side == 0 else 1)*self.squeeze*self.squeeze_scale,
+                          self.payload_weight/2*self.support_scale])
+        return self.targets[side], self.target_velocities[side], force
+
+    def motor_torques(self):
+        self.update_task()
+        torque = super().motor_torques()
+        if self.grasp_rotations is not None and not self.released:
+            for side, site in enumerate(self.sites):
+                idx = slice(12+4*side, 16+4*side)
+                dofs = self.vadr[idx]
+                mujoco.mj_jacSite(self.model, self.data, self.jac, self.rot_jac, site)
+                jac = self.jac[:, dofs]
+                null = np.eye(4) - np.linalg.pinv(jac) @ jac
+                rotation = self.data.site_xmat[site].reshape(3, 3)
+                error = .5 * sum(np.cross(rotation[:, k], self.grasp_rotations[side, :, k]) for k in range(3))
+                angular_velocity = self.rot_jac @ self.data.qvel
+                # Preserve twist about the grasp normal using the fourth arm DOF.
+                # Projection keeps position control the primary task.
+                moment = np.array([0, self.orientation_gain*error[1] - 2*angular_velocity[1], 0])
+                torque[idx] += null @ self.rot_jac[:, dofs].T @ moment
+        return torque
+
+    def measure(self):
+        values = super().measure()
+        m, d = self.model, self.data
+        rotation = d.xmat[self.box_id].reshape(3, 3)
+        bottom = values['box_height'] - np.abs(rotation[2]) @ self.box_halfsize
+        platform_force = 0.0
+        wrench = np.zeros(6)
+        for i, contact in enumerate(d.contact):
+            if self.platform not in (contact.geom1, contact.geom2):
+                continue
+            other = contact.geom2 if contact.geom1 == self.platform else contact.geom1
+            if m.geom_bodyid[other] != self.box_id:
+                continue
+            mujoco.mj_contactForce(m, d, i, wrench)
+            sign = 1 if contact.geom1 == self.platform else -1
+            platform_force += sign * (contact.frame.reshape(3,3).T @ wrench[:3])[2]
+        values.update(platform_force_n=platform_force,
+                      platform_clearance_m=float(bottom-self.platform_top),
+                      phase=self.phase)
+        return values
+
+
+class PickupStats:
+    def __init__(self):
+        self.hold = HoldStats()
+        self.initial = None
+        self.events = []
+        self.min_base_height = float('inf')
+        self.min_clearance = float('inf')
+        self.max_platform_force = 0.0
+        self.max_approach_palm_force = 0.0
+
+    def record(self, sim):
+        values = sim.measure()
+        if self.initial is None:
+            self.initial = values
+        self.events = list(sim.events)
+        self.min_base_height = min(self.min_base_height, values['base_height'])
+        if sim.phase in ('settle', 'approach'):
+            self.max_approach_palm_force = max(self.max_approach_palm_force,
+                                               float(np.max(values['normal_force'])))
+        if sim.phase == 'hold' and sim.data.time-sim.phase_start >= 1:
+            self.hold.samples.append(values)
+            self.min_clearance = min(self.min_clearance, values['platform_clearance_m'])
+            self.max_platform_force = max(self.max_platform_force, values['platform_force_n'])
+
+    def summary(self):
+        hold = self.hold.summary()
+        initial_support = (self.initial is not None and
+                           self.initial['platform_force_n'] > .8*self.initial['payload_weight'] and
+                           np.all(self.initial['normal_force'] < 1))
+        phases = [name for name, _ in self.events]
+        complete = phases == ['settle', 'approach', 'close', 'grasp', 'lift', 'hold']
+        passed = (hold['passed'] and initial_support and complete and
+                  hold.get('measured_seconds', 0) >= 3 and self.min_base_height > .8 and
+                  self.min_clearance > .04 and self.max_platform_force < .01 and
+                  self.max_approach_palm_force < 1)
+        return dict(passed=bool(passed), initially_platform_supported=bool(initial_support),
+                    phase_events=[{'phase': name, 'time': round(t, 3)} for name, t in self.events],
+                    min_platform_clearance_m=self.min_clearance if self.hold.samples else None,
+                    max_platform_force_during_hold_n=self.max_platform_force,
+                    max_palm_force_before_closing_n=self.max_approach_palm_force,
+                    hold=hold)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--headless', action='store_true')
+    parser.add_argument('--duration', type=positive, default=20, help='simulation seconds, at least 12')
+    parser.add_argument('--squeeze', type=positive, default=20, help='inward force per palm in newtons')
+    parser.add_argument('--contacts', action='store_true')
+    args = parser.parse_args()
+    if args.duration < 12:
+        parser.error('--duration must be at least 12 seconds for pickup and hold validation')
+    run_experiment(Pickup(squeeze=args.squeeze), PickupStats(), args)
+
+
+if __name__ == '__main__':
+    main()
