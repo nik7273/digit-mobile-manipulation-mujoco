@@ -86,10 +86,13 @@ Uses the original five-box pile and table locations, original textures and mesh
 sizes, and 1 kg free boxes. The table is grounded and fixed, with separate top
 and leg collisions. The scripted route approaches the pile, lifts its top box,
 sidesteps clear, and travels to the table for a contact-checked set-down.
-Omit `--overview` for a camera that follows Digit. Completion takes about 86
-simulation seconds. This uses known object poses and scripted waypoints; the
-report checks palm-only carrying and stable table support after release. The current carry has a brief tilt of about 29° while retaining
-both palm contacts.
+Omit `--overview` for a camera that follows Digit. The default `--speed-scale 2`
+roughly doubles carrying commands (.36 m/s forward, .24 m/s sideways), cutting
+transport from 54 to 30 seconds and the full sequence from 86 to about 64 seconds.
+Use `--speed-scale 1` for the original pace; values between 1 and 2 are accepted.
+This uses known poses and scripted waypoints. Tilt is reported without a carry
+angle limit; success still requires palm-only transport and stable table support
+after release. Faster commands above 2 failed balance or grasp tests.
 
 ## Test
 

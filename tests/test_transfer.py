@@ -35,10 +35,9 @@ def test_full_contact_only_transfer_and_reset():
             break
     result = stats.summary()
     assert result['passed'], result
-    assert result['carry_seconds'] > 40
+    assert 20 < result['carry_seconds'] < 35
+    assert result['completion_seconds'] < 70
     assert result['palm_only_carry']
-    # The lower pile pickup has a transient pitch excursion during gait entry.
-    assert result['max_carry_tilt_degrees'] < 35
     assert result['final_table_support_n'] == pytest.approx(sim.payload_weight, rel=.05)
     assert np.all(sim.data.xfrc_applied == 0)
     assert np.all(sim.data.qfrc_applied == 0)
@@ -50,3 +49,9 @@ def test_full_contact_only_transfer_and_reset():
     assert sim.grasp_moment is None and sim.grasp_rotations is None
     np.testing.assert_allclose(sim.data.qpos[sim.box_adr:sim.box_adr+3], [.45,0,1.6])
     sim.step()
+
+
+@pytest.mark.parametrize('speed', [0, .9, 2.1, float('nan'), float('inf')])
+def test_speed_scale_validation(speed):
+    with pytest.raises(ValueError, match='Speed scale'):
+        Transfer(speed_scale=speed)

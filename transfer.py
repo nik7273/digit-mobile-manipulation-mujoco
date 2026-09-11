@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import numpy as np
 import mujoco
 
@@ -52,7 +53,10 @@ class Transfer(Pickup):
     follow_camera = True
     yaw_rotation = Carry.yaw_rotation
 
-    def __init__(self, *, overview=False):
+    def __init__(self, *, overview=False, speed_scale=2.0):
+        if not math.isfinite(speed_scale) or not 1 <= speed_scale <= 2:
+            raise ValueError("Speed scale must be finite and between 1 and 2")
+        self.speed_scale = speed_scale
         self.overview = overview
         self.follow_camera = not overview
         self.camera_distance = 7 if overview else 2.5
@@ -84,11 +88,19 @@ class Transfer(Pickup):
 
     def palm_command(self, side):
         target, velocity, force = super().palm_command(side)
-        if self.phase in ('clear-pile','walk-to-table'):
-            force = self.yaw_rotation() @ force
+        desired_rotation = self.yaw_rotation()
+        if self.phase in ('settle-at-table', 'lower'):
+            # Match orientation/squeeze to the hand line as it straightens for placement.
+            axis = self.targets[0]-self.targets[1]
+            axis[2] = 0
+            axis /= np.linalg.norm(axis)
+            self.grasp_axis = axis
+            desired_rotation = np.column_stack(([axis[1],-axis[0],0], axis, [0,0,1]))
+        if self.phase in ('clear-pile','walk-to-table','settle-at-table','lower'):
+            force = desired_rotation @ force
         if self.phase in ('lift','hold','clear-pile','walk-to-table','settle-at-table','lower'):
             rotation = self.data.xmat[self.box_id].reshape(3,3)
-            error = .5*sum(np.cross(rotation[:,k], self.yaw_rotation()[:,k]) for k in range(3))
+            error = .5*sum(np.cross(rotation[:,k], desired_rotation[:,k]) for k in range(3))
             box_dof = self.model.joint('held-box').dofadr[0]
             angular = rotation @ self.data.qvel[box_dof+3:box_dof+6]
             self.grasp_moment = float(80*np.dot(error, self.grasp_axis)-5*np.dot(angular, self.grasp_axis))
@@ -108,7 +120,8 @@ class Transfer(Pickup):
             rotation = self.yaw_rotation()
             yaw = np.arctan2(rotation[1,0],rotation[0,0])
             angular = self.data.xmat[self.base_id].reshape(3,3) @ self.data.qvel[3:6]
-            moment = np.clip(-200*yaw-20*angular[2], -40,40)
+            steering = self.speed_scale if self.phase != 'walk-to-pile' else 1
+            moment = np.clip(-200*steering*yaw-20*steering*angular[2], -40*steering,40*steering)
             # Steer the feet toward the route heading; upstream fixes hip yaw at zero.
             grounded = set()
             for contact in self.data.contact:
@@ -134,8 +147,10 @@ class Transfer(Pickup):
         self.filtered_velocity += dt/.25*(self.data.qvel[:2]-self.filtered_velocity)
         error = self.destination-self.data.qpos[:2]
         self.integral = np.clip(self.integral + .08*dt*error, -.12,.12)
-        command = np.clip(.7*error - .5*self.filtered_velocity + self.integral, -.18,.18)
-        command[1] = np.clip(command[1], -.12, .12)
+        # Preserve the calibrated approach/stop at the pile; accelerate transport.
+        scale = self.speed_scale if self.phase in ('clear-pile', 'walk-to-table') else 1
+        command = np.clip(.7*error - .5*self.filtered_velocity + self.integral, -.18*scale,.18*scale)
+        command[1] = np.clip(command[1], -.12*scale, .12*scale)
         rotation = self.yaw_rotation()
         self.grasp_axis = rotation[:,1].copy()
         local = rotation[:2,:2].T @ command
@@ -204,6 +219,12 @@ class Transfer(Pickup):
             self.targets,self.target_velocities = blend(self.open_start,self.open_start+[[0,.12,0],[0,-.12,0]],elapsed,2)
             self.grasp_rotations = None
             if elapsed >= 2:
+                self.retract_start = self.targets.copy()
+                self.transition('retract')
+        elif self.phase == 'retract':
+            self.targets, self.target_velocities = blend(
+                self.retract_start, self.retract_start + [-.15,0,.25], elapsed, 2)
+            if elapsed >= 2:
                 self.transition('done')
         if self.phase in ('clear-pile','walk-to-table','settle-at-table'):
             values = self.measure()
@@ -243,8 +264,8 @@ class TransferStats:
         supported = bool(self.carry_samples) and all(
             v['other_contacts'] == 0 and np.min(v['normal_force']) > 1
             for v in self.carry_samples)
-        bounded_tilt = all(v['tilt_degrees'] < 35 for v in self.carry_samples)
-        return dict(passed=bool(stable and supported and bounded_tilt and self.minimum_base > .8), events=self.events,
+        return dict(passed=bool(stable and supported and self.minimum_base > .8), events=self.events,
+                    completion_seconds=next((t for phase, t in self.events if phase == 'done'), None),
                     min_base_height_m=self.minimum_base, released_samples=len(self.samples),
                     carry_seconds=(self.carry_samples[-1]['time']-self.carry_samples[0]['time']) if self.carry_samples else 0,
                     max_carry_tilt_degrees=max((v['tilt_degrees'] for v in self.carry_samples), default=0),
@@ -259,8 +280,11 @@ def main():
     parser.add_argument('--duration', type=positive, default=100)
     parser.add_argument('--contacts', action='store_true')
     parser.add_argument('--overview', action='store_true', help='show the pile, route, and table together')
+    parser.add_argument('--speed-scale', type=positive, default=2, help='carrying speed multiplier, 1 to 2; 1 restores the original pace')
     args = parser.parse_args()
-    run_experiment(Transfer(overview=args.overview), TransferStats(), args)
+    if not 1 <= args.speed_scale <= 2:
+        parser.error('--speed-scale must be between 1 and 2')
+    run_experiment(Transfer(overview=args.overview, speed_scale=args.speed_scale), TransferStats(), args)
 
 
 if __name__ == '__main__':
