@@ -40,3 +40,16 @@ python -m pytest                       # Include full simulation runs
 ruff check .
 ruff format --check .
 ```
+
+## Videos
+### Standing Hold
+https://github.com/user-attachments/assets/f1765a7a-1171-4b40-9222-da857656ce0b
+
+### Pickup
+https://github.com/user-attachments/assets/2008a632-8d69-43f7-a1d2-bf7fa20c9e27
+
+### Carry
+https://github.com/user-attachments/assets/228c4e21-f64a-4632-a967-818e441ec2a8
+
+### Transfer
+https://github.com/user-attachments/assets/d94485a6-52eb-4d03-9cdf-3fa7836737a0
